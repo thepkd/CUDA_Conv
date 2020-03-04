@@ -1,7 +1,7 @@
 # Location of the CUDA Toolkit
 CUDA_PATH = /usr/local/cuda
 NVCC := $(CUDA_PATH)/bin/nvcc
-CCFLAGS :=
+CCFLAGS := -std=c++11
 
 build: main
 
