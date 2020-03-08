@@ -5,6 +5,7 @@
 #include <string.h>
 #include <vector>
 #include <iomanip>
+#include <chrono>
 using namespace std;
 
 __constant__ double filter_d[10*10];
@@ -179,14 +180,17 @@ int main(int argc, char** argv)
     }
 
 
-    int THREADS = 8;
+    int THREADS = 16;
     int BLOCKS_W = (W+FW-1+THREADS-1)/THREADS;
     int BLOCKS_H = (H+FH-1+THREADS-1)/THREADS;
  //   cout << "Block Width and Height: " << BLOCKS_W << ":" << BLOCKS_H << endl;
     dim3 grid_dim(BLOCKS_W,BLOCKS_H);
     dim3 block_dim(THREADS,THREADS);
 //    cout << W << H << FW << FH << endl;
+    auto start_time = std::chrono::high_resolution_clock::now();
     convolution_2d<<<grid_dim,block_dim>>>(data_d,result_d,W,H,FW,FH);
+    auto elapsed_time = std::chrono::high_resolution_clock::now() - start_time;
+   
     err = cudaGetLastError();
     if(err != cudaSuccess)
     {
@@ -219,7 +223,9 @@ int main(int argc, char** argv)
      } 
     cout << endl;
     } 
+    long long microseconds = std::chrono::duration_cast<std::chrono::microseconds>(elapsed_time).count();
 
+    cout << "Time Elapsed:" << microseconds << endl;
 
     cudaFree(data_d);
     cudaFree(result_d);
