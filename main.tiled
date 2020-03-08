@@ -1,0 +1,271 @@
+#include <stdio.h>
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <string.h>
+#include <vector>
+#include <iomanip>
+#include <chrono>
+using namespace std;
+
+__constant__ double filter_d[10*10];
+// 2D Convolution Kernel
+// Takes:
+//  matrix: Input matrix
+//  result: Convolution result
+//  N:      Dimensions of the matrices
+__global__ void convolution_2d(double* matrix, double* result, int W, int H, int FW, int FH){
+    //__shared__ double shrd_mem[(blockDim.y+FH-1)][(blockDim.x+FW-1)];
+    __shared__ double shrd_mem[40][40];
+    // Calculate the global thread positions
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    int row = blockIdx.y * blockDim.y + ty;
+    int col = blockIdx.x * blockDim.x + tx;
+	
+    if(row>=0 && row<H && col>=0 && col<W)
+    shrd_mem[ty+FH-1][tx+FW-1] = matrix[row*W+col];
+    else
+    shrd_mem[ty+FH-1][tx+FW-1] = 0;
+
+    if(ty<FH-1)
+	{
+	if(row-FH+1>=0 && col>=0 && row-FH+1<H && col<W)
+        shrd_mem[ty][tx+FW-1]= matrix[(row-FH+1)*W+(col)];
+	else
+        shrd_mem[ty][tx+FW-1]= 0;
+	}
+
+     if(tx<FW-1)
+	{
+	if(col-FW+1>=0 && row>=0 && col-FW+1<W && row<H)
+	shrd_mem[ty+FH-1][tx] = matrix[(row*W + (col-FW+1))] ;
+	else
+	shrd_mem[ty+FH-1][tx] = 0;
+	}
+
+     if(ty<FH-1 && tx<FW-1)
+	{
+	if(row-FH+1>=0 && col-FW-1>=0 && row-FH+1<H && col-FW+1<W)
+	shrd_mem[ty][tx] = matrix[(row-FH+1)*W+(col-FW+1)];
+	else
+	shrd_mem[ty][tx] = 0;
+	}
+
+	__syncthreads();
+    // Starting index for calculation
+//    int start_r = row - (FH-1);
+//    int start_c = col - (FW-1);
+
+    // Temp value for accumulating the result
+    double temp = 0;
+
+    // Iterate over all the rows
+    for(int i = 0; i < FH; i++){
+        // Go over each column
+         for(int j = 0; j < FW; j++){
+	//	if(row-i>=0 && row-i<H) 
+	//	{
+	//		if(col-j>=0 && col-j<W)
+	//		{
+                		temp += (shrd_mem[ty+FH-1-i][tx+FW-1-j]*(filter_d[i*FW+j]));
+        //        	}
+        //    	}
+        }
+    }
+
+    // Write back the result
+    if(row<H+FH-1 && col<W+FW-1)
+    result[row * (W+(FW-1)) + col] = temp;
+}
+
+int main(int argc, char** argv)
+{
+    cudaError_t err = cudaSuccess;
+    if(argv[1]== NULL)
+    printf("Wrong Input! Usage: ./2dConv <inputFile>/n");
+    
+    ifstream file;
+    file.open(argv[1]);
+    string line;
+
+    int T_W=0;
+    int T_H=0;
+    int W=0,H=0;
+    vector <vector<double> > Matrix;
+
+    vector <double> tokens;
+    double intermediate;
+    //Determine the Width and Height of the Input Data Matrix
+    while(getline(file,line))
+    {
+        if(line != "")
+        {
+          T_H++; //Increment Height after each line 
+          stringstream ss(line);
+          while(ss >> intermediate)
+          {
+              T_W++;
+              tokens.push_back(intermediate);
+          //    cout << intermediate << endl;
+          }
+          Matrix.push_back(tokens);
+          W = T_W;
+          T_W = 0;
+        }
+        else
+        {
+        //    cout << "Width of Data is "<< W << endl;
+        //    cout << "Height of Data is "<< H << endl;
+            break;
+        }
+    }
+    H = T_H;
+ //   cout << "Width and Height of Matrix: " << W << ":" << H << endl;
+    
+    int F_W=0,F_H=0;
+    int FW,FH;
+    vector <vector<double> > Filter;
+    vector <double> rows;
+    double inter;
+    //Determine the Width and Height of the Input Data Matrix
+    while(getline(file,line))
+    {
+        if(line != "")
+        {
+          F_H++; //Increment Height after each line 
+          stringstream ss(line);
+          while(ss >> inter)
+          {
+              F_W++;
+              rows.push_back(inter);
+    	  //    cout << inter << endl;
+          }
+          Filter.push_back(rows);
+          FW = F_W;
+          F_W = 0;
+        }
+        else
+        {
+     //       cout << "Width of Filter is "<< FW << endl;
+     //       cout << "Height of Filter is "<< FH << endl;
+            break;
+        }
+    }
+    FH = F_H;
+ //   cout << "Width and Height of Filter is:" << FW << ":" << FH << endl;
+    
+    double *data_h = new double[W*H];
+    double *result_h = new double[(W+FW-1)*(H+FH-1)];
+    if(data_h==NULL || result_h==NULL)
+    cout << "Error mem1 not allocated" << endl;
+    for(int i=0; i<H ; i++)
+    {
+    	for(int j=0; j<W ; j++)
+    	{
+            data_h[i*W+j] = tokens[i*W+j];
+        }
+    }
+
+    double *filter_h = new double[10*10];
+    if(filter_h==NULL )
+    cout << "Error mem2 not allocated" << endl;
+    for(int i=0;i<FH;i++)
+    {
+        for(int j=0;j<FW;j++)
+        {
+            filter_h[i*FW+j] = rows[i*FW+j];
+//	    cout << filter_h[i*FW+j];
+        }
+    } 
+
+    double *data_d;
+    double *result_d;
+    size_t size_data = W*H*sizeof(double);
+    size_t size_res = (W+(FW-1))*(H+(FH-1))*sizeof(double);
+    size_t size_filter = 10*10*sizeof(double);
+
+    err = cudaMalloc((void **)&data_d,size_data);
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "Failed to allocate device vector 1 (error code %s)!\n", cudaGetErrorString(err));
+        exit(EXIT_FAILURE);
+    }
+    
+    err = cudaMalloc((void **)&result_d,size_res);
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "Failed to allocate device vector 2 (error code %s)!\n", cudaGetErrorString(err));
+        exit(EXIT_FAILURE);
+    }
+
+    err = cudaMemcpy(data_d,data_h,size_data,cudaMemcpyHostToDevice);
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "Failed to allocate device vector 3 (error code %s)!\n", cudaGetErrorString(err));
+        exit(EXIT_FAILURE);
+    }
+
+    err = cudaMemcpyToSymbol(filter_d,filter_h, size_filter);
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "Failed to allocate device vector 4 (error code %s)!\n", cudaGetErrorString(err));
+        exit(EXIT_FAILURE);
+    }
+
+
+    int THREADS = 8;
+    int BLOCKS_W = (W+FW-1+THREADS-1)/THREADS;
+    int BLOCKS_H = (H+FH-1+THREADS-1)/THREADS;
+ //   cout << "Block Width and Height: " << BLOCKS_W << ":" << BLOCKS_H << endl;
+    dim3 grid_dim(BLOCKS_W,BLOCKS_H);
+    dim3 block_dim(THREADS,THREADS);
+//    cout << W << H << FW << FH << endl;
+    auto start_time = std::chrono::high_resolution_clock::now();
+    convolution_2d<<<grid_dim,block_dim>>>(data_d,result_d,W,H,FW,FH);
+    auto elapsed_time = std::chrono::high_resolution_clock::now() - start_time;
+   
+    err = cudaGetLastError();
+    if(err != cudaSuccess)
+    {
+	fprintf(stderr, "Failed to allocate device vector 5(error code %s)!\n", cudaGetErrorString(err));
+	exit(EXIT_FAILURE);	
+    }
+
+    err = cudaMemcpy(result_h,result_d,size_res,cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "Failed to allocate device vector 6 (error code %s)!\n", cudaGetErrorString(err));
+        exit(EXIT_FAILURE);
+    }
+
+
+    //Write code to print out the Output Result.
+
+    //--------------------------------
+    for(T_H=0;T_H<H+FH-1;T_H++)
+    {
+   //     for(T_W=0;T_W<W;T_W++)
+   //     {
+   //         cout << Matrix.at(T_H) << ' ';
+   //     }
+     //   cout << endl;
+     for(T_W=0 ; T_W< W+FW-1;T_W++)
+     {
+        // cout << std::setprecision(12);
+         printf("%.3f ",result_h[(T_H*(W+FW-1))+T_W]);
+     } 
+    cout << endl;
+    } 
+    long long microseconds = std::chrono::duration_cast<std::chrono::microseconds>(elapsed_time).count();
+
+ //   cout << "Time Elapsed:" << microseconds << endl;
+
+    cudaFree(data_d);
+    cudaFree(result_d);
+    cudaFree(filter_d);
+    free(data_h);
+    free(filter_h); 
+    free(result_h);
+ return 0;
+}
